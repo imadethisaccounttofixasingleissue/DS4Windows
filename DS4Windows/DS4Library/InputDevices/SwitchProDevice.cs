@@ -1,4 +1,4 @@
-﻿/*
+/*
 DS4Windows
 Copyright (C) 2023  Travis Nickles
 
@@ -164,6 +164,11 @@ namespace DS4Windows.InputDevices
         private StickAxisData leftStickYData;
         private StickAxisData rightStickXData;
         private StickAxisData rightStickYData;
+        private bool firstReport = true;
+        private int leftStickXInitialOffset;
+        private int leftStickYInitialOffset;
+        private int rightStickXInitialOffset;
+        private int rightStickYInitialOffset;
 
         private const string BLUETOOTH_HID_GUID = "{00001124-0000-1000-8000-00805F9B34FB}";
 
@@ -372,7 +377,7 @@ namespace DS4Windows.InputDevices
                 idleInput = true;
                 bool syncWriteReport = conType != ConnectionType.BT;
                 //bool forceWrite = false;
-                
+
                 //int maxBatteryValue = 0;
                 int tempBattery = 0;
                 bool tempCharging = charging;
@@ -530,30 +535,73 @@ namespace DS4Windows.InputDevices
                     cState.L2 = (byte)(cState.L2Btn ? 255 : 0);
                     cState.L2Raw = cState.L2;
 
-                    stick_raw[0] = inputReportBuffer[6];
-                    stick_raw[1] = inputReportBuffer[7];
-                    stick_raw[2] = inputReportBuffer[8];
+                    // Stick data from input report (Switch Pro format)
+                    stick_raw[0] = inputReportBuffer[6];  // LX low byte
+                    stick_raw[1] = inputReportBuffer[7];  // LX high nibble, LY low nibble
+                    stick_raw[2] = inputReportBuffer[8];  // LY high byte
+                    stick_raw2[0] = inputReportBuffer[9]; // RX low byte
+                    stick_raw2[1] = inputReportBuffer[10]; // RX high nibble, RY low nibble
+                    stick_raw2[2] = inputReportBuffer[11]; // RY high byte
 
-                    tempAxis = (stick_raw[0] | ((stick_raw[1] & 0x0F) << 8)) - leftStickOffsetX;
-                    tempAxis = tempAxis > leftStickXData.max ? leftStickXData.max : (tempAxis < leftStickXData.min ? leftStickXData.min : tempAxis);
-                    cState.LX = (byte)((tempAxis - leftStickXData.min) / (double)(leftStickXData.max - leftStickXData.min) * 255);
+                    // Capture initial stick values on first report to set centering offsets
+                    if (firstReport)
+                    {
+                        tempAxis = (stick_raw[0] | ((stick_raw[1] & 0x0F) << 8));
+                        leftStickXInitialOffset = tempAxis - leftStickXData.mid;
+                        tempAxis = ((stick_raw[1] >> 4) | (stick_raw[2] << 4));
+                        leftStickYInitialOffset = tempAxis - leftStickYData.mid;
+                        tempAxis = (stick_raw2[0] | ((stick_raw2[1] & 0x0F) << 8));
+                        rightStickXInitialOffset = tempAxis - rightStickXData.mid;
+                        tempAxis = ((stick_raw2[1] >> 4) | (stick_raw2[2] << 4));
+                        rightStickYInitialOffset = tempAxis - rightStickYData.mid;
 
-                    tempAxis = ((stick_raw[1] >> 4) | (stick_raw[2] << 4)) - leftStickOffsetY;
-                    tempAxis = tempAxis > leftStickYData.max ? leftStickYData.max : (tempAxis < leftStickYData.min ? leftStickYData.min : tempAxis);
-                    cState.LY = (byte)((((tempAxis - leftStickYData.min) / (double)(leftStickYData.max - leftStickYData.min) - 0.5) * -1.0 + 0.5) * 255);
+                        Console.WriteLine($"Offsets - LX: {leftStickXInitialOffset}, LY: {leftStickYInitialOffset}, RX: {rightStickXInitialOffset}, RY: {rightStickYInitialOffset}");
+                        firstReport = false;
+                    }
 
-                    stick_raw2[0] = inputReportBuffer[9];
-                    stick_raw2[1] = inputReportBuffer[10];
-                    stick_raw2[2] = inputReportBuffer[11];
+                    // Process Left Stick X
+                    tempAxis = (stick_raw[0] | ((stick_raw[1] & 0x0F) << 8)) - leftStickXInitialOffset;
+                    tempAxis = Math.Max(leftStickXData.min, Math.Min(leftStickXData.max, tempAxis)); // Clamp to min/max
+                    Console.WriteLine($"LX Raw: {tempAxis}, Min: {leftStickXData.min}, Max: {leftStickXData.max}, Mid: {leftStickXData.mid}");
+                    double normalizedLX = (tempAxis - leftStickXData.min) / (double)(leftStickXData.max - leftStickXData.min);
+                    normalizedLX = Math.Max(0.0, Math.Min(1.0, normalizedLX));
+                    Console.WriteLine($"LX Normalized: {normalizedLX}");
+                    cState.LX = tempAxis == leftStickXData.mid ? (byte)128 : (byte)Math.Round(normalizedLX * 255);
+                    Console.WriteLine($"LX Output: {cState.LX}");
 
-                    tempAxis = (stick_raw2[0] | ((stick_raw2[1] & 0x0F) << 8)) - rightStickOffsetX;
-                    tempAxis = tempAxis > rightStickXData.max ? rightStickXData.max : (tempAxis < rightStickXData.min ? rightStickXData.min : tempAxis);
-                    cState.RX = (byte)((tempAxis - rightStickXData.min) / (double)(rightStickXData.max - rightStickXData.min) * 255);
+                    // Process Left Stick Y (with inversion for DS4 compatibility)
+                    tempAxis = ((stick_raw[1] >> 4) | (stick_raw[2] << 4)) - leftStickYInitialOffset;
+                    tempAxis = Math.Max(leftStickYData.min, Math.Min(leftStickYData.max, tempAxis)); // Clamp to min/max
+                    Console.WriteLine($"LY Raw: {tempAxis}, Min: {leftStickYData.min}, Max: {leftStickYData.max}, Mid: {leftStickYData.mid}");
+                    double normalizedLY = (tempAxis - leftStickYData.min) / (double)(leftStickYData.max - leftStickYData.min);
+                    normalizedLY = Math.Max(0.0, Math.Min(1.0, normalizedLY));
+                    Console.WriteLine($"LY Normalized (before invert): {normalizedLY}");
+                    normalizedLY = 1.0 - normalizedLY; // Invert Y-axis
+                    Console.WriteLine($"LY Normalized (after invert): {normalizedLY}");
+                    cState.LY = tempAxis == leftStickYData.mid ? (byte)128 : (byte)Math.Round(normalizedLY * 255);
+                    Console.WriteLine($"LY Output: {cState.LY}");
 
-                    tempAxis = ((stick_raw2[1] >> 4) | (stick_raw2[2] << 4)) - rightStickOffsetY;
-                    tempAxis = tempAxis > rightStickYData.max ? rightStickYData.max : (tempAxis < rightStickYData.min ? rightStickYData.min : tempAxis);
-                    //cState.RY = (byte)((tempAxis - STICK_MIN) / (STICK_MAX - STICK_MIN) * 255);
-                    cState.RY = (byte)((((tempAxis - rightStickYData.min) / (double)(rightStickYData.max - rightStickYData.min) - 0.5) * -1.0 + 0.5) * 255);
+                    // Process Right Stick X
+                    tempAxis = (stick_raw2[0] | ((stick_raw2[1] & 0x0F) << 8)) - rightStickXInitialOffset;
+                    tempAxis = Math.Max(rightStickXData.min, Math.Min(rightStickXData.max, tempAxis)); // Clamp to min/max
+                    Console.WriteLine($"RX Raw: {tempAxis}, Min: {rightStickXData.min}, Max: {rightStickXData.max}, Mid: {rightStickXData.mid}");
+                    double normalizedRX = (tempAxis - rightStickXData.min) / (double)(rightStickXData.max - rightStickXData.min); // Fixed min reference
+                    normalizedRX = Math.Max(0.0, Math.Min(1.0, normalizedRX));
+                    Console.WriteLine($"RX Normalized: {normalizedRX}");
+                    cState.RX = tempAxis == rightStickXData.mid ? (byte)128 : (byte)Math.Round(normalizedRX * 255);
+                    Console.WriteLine($"RX Output: {cState.RX}");
+
+                    // Process Right Stick Y (with inversion for DS4 compatibility)
+                    tempAxis = ((stick_raw2[1] >> 4) | (stick_raw2[2] << 4)) - rightStickYInitialOffset;
+                    tempAxis = Math.Max(rightStickYData.min, Math.Min(rightStickYData.max, tempAxis)); // Clamp to min/max
+                    Console.WriteLine($"RY Raw: {tempAxis}, Min: {rightStickYData.min}, Max: {rightStickYData.max}, Mid: {rightStickYData.mid}");
+                    double normalizedRY = (tempAxis - rightStickYData.min) / (double)(rightStickYData.max - rightStickYData.min);
+                    normalizedRY = Math.Max(0.0, Math.Min(1.0, normalizedRY));
+                    Console.WriteLine($"RY Normalized (before invert): {normalizedRY}");
+                    normalizedRY = 1.0 - normalizedRY; // Invert Y-axis
+                    Console.WriteLine($"RY Normalized (after invert): {normalizedRY}");
+                    cState.RY = tempAxis == rightStickYData.mid ? (byte)128 : (byte)Math.Round(normalizedRY * 255);
+                    Console.WriteLine($"RY Output: {cState.RY}");
 
                     for (int i = 0; i < 3; i++)
                     {
@@ -591,7 +639,7 @@ namespace DS4Windows.InputDevices
                     int gyroPitch = (short)(gyro_out[6 + IMU_PITCH_IDX] - gyroBias[IMU_PITCH_IDX] - gyroCalibOffsets[IMU_PITCH_IDX]);
                     int gyroRoll = (short)(gyro_out[6 + IMU_ROLL_IDX] - gyroBias[IMU_ROLL_IDX] - gyroCalibOffsets[IMU_ROLL_IDX]);
                     //cState.Motion.populate(gyroYaw, gyroPitch, gyroRoll, accelX, accelY, accelZ, cState.elapsedTime, pState.Motion);
-                    
+
                     // Need to populate the SixAxis object manually to work around conversions
                     //Console.WriteLine("GyroYaw: {0}", gyroYaw);
                     SixAxis tempMotion = cState.Motion;
@@ -1176,6 +1224,8 @@ namespace DS4Windows.InputDevices
             //gyroCoeff[IMU_PITCH_IDX] = (gyroSens[IMU_PITCH_IDX] - gyroBias[IMU_PITCH_IDX]) / 65535.0;
             //gyroCoeff[IMU_ROLL_IDX] = (gyroSens[IMU_ROLL_IDX] - gyroBias[IMU_ROLL_IDX]) / 65535.0;
             //Console.WriteLine("GYRO COEFF: {0}", string.Join(",", gyroCoeff));
+            Console.WriteLine($"Left Stick Calib: {string.Join(", ", leftStickCalib)}");
+            Console.WriteLine($"Right Stick Calib: {string.Join(", ", rightStickCalib)}");
         }
 
         public override bool DisconnectWireless(bool callRemoval = false)
